@@ -73,18 +73,15 @@ def _flatten(spark_session, path_to_json_files):
         .withColumn('pages', F.explode('pages'))
         .select('*', 'pages.*')
         .withColumnRenamed('id', 'page_id')
-        .drop('pages')
 
         # expand questions
         .withColumn('questions', F.explode('questions'))
         .select('*', 'questions.*')
         .withColumnRenamed('id', 'question_id')
-        .drop('questions')
 
         # expand answers
         .withColumn('answers', F.explode('answers'))
         .select('*', 'answers.*')
-        .drop('answers')
     )
 
     for col, dtype in df.dtypes:
@@ -118,56 +115,68 @@ def _interpret(df, details):
     v3/surveys/{survey_id}/details
     """
     map_ = functools.partial(_create_map, details)
+    base = '.pages[].questions[]'
     jqpath = {
-        'questions': '.pages[].questions[]',
-        'choices': '.pages[].questions[].answers | select(. != null) | .choices | select(. != null) | .[]',
-        'rows': '.pages[].questions[].answers | select(. != null) | .rows | select(. != null) | .[]',
-        'cols': '.pages[].questions[].answers | select(. != null) | .cols | select(. != null) | .[].choices[]',
+        'questions': base,
+        'choices': f'{base}.answers | select(. != null) | .choices | select(. != null) | .[]',
+        'rows': f'{base}.answers | select(. != null) | .rows | select(. != null) | .[]',
+        'cols': f'{base}.answers | select(. != null) | .cols | select(. != null) | .[].choices[]',
     }
 
     df = (
         df
         # look up _ids
         .withColumn('family', map_(jqpath['questions'], '.id', '.family')[F.col('question_id')])
-        .withColumn('heading', map_(jqpath['questions'], '.id', '.headings[0].heading')[F.col('question_id')])
+        .withColumn('heading', map_(
+            jqpath['questions'], '.id', '.headings[0].heading')[F.col('question_id')])
         .withColumn('heading', F.regexp_replace('heading', r'<[^>]*>', ''))  # strip HTML tags
         .withColumn('row', map_(jqpath['rows'], '.id', '.text')[F.col('row_id')])
         .withColumn('choice', F.coalesce(
             map_(jqpath['choices'], '.id', '.text')[F.col('choice_id')],
-            map_(jqpath['cols'], '.id', '.text')[F.col('choice_id')]
-        ))
+            map_(jqpath['cols'], '.id', '.text')[F.col('choice_id')]))
+
         # flag for other
-        .withColumn(
-            'other',
-            map_(jqpath['questions'], '.id', '.answers.other.is_answer_choice')[F.col('question_id')]
-        )
-        # construct column name for later pivoting
+        .withColumn('other', map_(
+            jqpath['questions'], '.id', '.answers.other.is_answer_choice')[F.col('question_id')])
+
+        # construct column names for later pivoting
         .withColumn(
             'column',
-            F.when((F.col('family') == 'demographic'), 
-                   F.concat_ws('_', norm('heading'), norm('row')))
-             .when((F.col('family') == 'single_choice') & F.col('other') & F.col('other_id').isNotNull(),
+            # demographic
+            F.when(F.col('family') == 'demographic', F.concat_ws('_', norm('heading'), norm('row')))
+
+             # single_choice
+             .when((F.col('family') == 'single_choice')
+                   & F.col('other') & F.col('other_id').isNotNull(),
                    F.concat_ws('_', norm('heading'), F.lit('other')))
-             .when((F.col('family') == 'single_choice'),
-                   norm('heading'))
-             .when((F.col('family') == 'open_ended'),
-                   F.concat_ws('_', norm('heading'), norm('row')))
-             .when((F.col('family') == 'multiple_choice') & F.col('other') & F.col('other_id').isNotNull(),
+             .when(F.col('family') == 'single_choice', norm('heading'))
+
+             # open_ended
+             .when(F.col('family') == 'open_ended', F.concat_ws('_', norm('heading'), norm('row')))
+
+             # multiple_choice
+             .when((F.col('family') == 'multiple_choice')
+                   & F.col('other') & F.col('other_id').isNotNull(),
                    F.concat_ws('_', norm('heading'), F.lit('other')))
-             .when((F.col('family') == 'multiple_choice'),
+             .when(F.col('family') == 'multiple_choice',
                    F.concat_ws('_', norm('heading'), norm('choice')))
-             .when((F.col('family') == 'matrix'),
-                   F.concat_ws('_', norm('heading'), norm('row')))
+
+             # matrix
+             .when(F.col('family') == 'matrix', F.concat_ws('_', norm('heading'), norm('row')))
+
+             # catch-all
              .otherwise(F.concat_ws('_', F.lit('unparsed_question'), F.col('question_id')))
         )
         # pick field that constitutes "response"
         .withColumn(
             'value',
             F.when((F.col('family') == 'demographic'), F.col('text'))
-             .when((F.col('family') == 'single_choice') & F.col('other_id').isNotNull(), F.col('text'))
+             .when((F.col('family') == 'single_choice') & F.col('other_id').isNotNull(),
+                   F.col('text'))
              .when((F.col('family') == 'single_choice'), F.col('choice'))
              .when((F.col('family') == 'open_ended'), F.col('text'))
-             .when((F.col('family') == 'multiple_choice') & F.col('other_id').isNotNull(), F.col('text'))
+             .when((F.col('family') == 'multiple_choice') & F.col('other_id').isNotNull(),
+                   F.col('text'))
              .when((F.col('family') == 'multiple_choice'), F.col('choice'))
              .when((F.col('family') == 'matrix'), F.col('choice'))
         )
@@ -177,10 +186,12 @@ def _interpret(df, details):
 
 def _pivot(df):
     """convert to wide format"""
+
     # dedup questions with same column name
     df = (
         df
-        .withColumn('_rank', F.dense_rank().over(Window.partitionBy('column').orderBy('question_id')))
+        .withColumn('_rank', F.dense_rank().over(
+            Window.partitionBy('column').orderBy('question_id')))
         .withColumn('column', F.concat_ws('_', 'column', '_rank'))
     )
     
@@ -216,8 +227,8 @@ def _pivot(df):
             base,
             F.when(
                 F.col(other).isNotNull(),
-                F.coalesce(F.col(base), F.lit('Other (please specify)')))
-            .otherwise(F.col(base))
+                F.coalesce(F.col(base), F.lit('Other (please specify)'))
+            ).otherwise(F.col(base))
         )
 
     # drop __question_id prefixes and _1 suffixes
