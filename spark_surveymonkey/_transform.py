@@ -47,7 +47,7 @@ def norm(col, maxlen=50):
     return col
 
 
-def _create_map(details_json, base_string, key_string, val_string):
+def map_from_json(details_json, base_string, key_string, val_string):
     """construct pyspark map from jq strings"""
     keys = jq.compile(base_string + key_string).input(details_json).all()
     vals = jq.compile(base_string + val_string).input(details_json).all()
@@ -78,7 +78,7 @@ RESPONSE_KEY = [
 ]
 
 
-def _flatten(spark_session, path_to_json_files):
+def flatten(spark_session, path_to_json_files):
     """take a collection of JSON files and convert to DataFrame
     supports JSON format from SurveyMonkey API endpoint
     v3/surveys/{survey_id}/responses
@@ -111,9 +111,10 @@ def _flatten(spark_session, path_to_json_files):
             df = df.withColumn(col, blank_as_null(col))
 
     # columns that sometimes don't exist
-    for c in ['col_id', 'other_id']:
+    for c in ['choice_id', 'row_id', 'col_id', 'other_id']:
         if c not in df.columns:
             df = df.withColumn(c, F.lit(None).cast('long'))
+
     for c in RESPONSE_KEY:
         if c not in df.columns:
             df = df.withColumn(c, F.lit(None).cast('string'))
@@ -131,97 +132,84 @@ def _flatten(spark_session, path_to_json_files):
     )
 
 
-def _interpret(df, details):
+def interpret(df, details):
     """take basic flattened DataFrame and translate _ids to human readable format
     assumes details_json is output from SurveyMonkey API endpoint
     v3/surveys/{survey_id}/details
     """
-    map_ = functools.partial(_create_map, details)
-    base = '.pages[].questions[]'
-    jqpath = {
-        'questions': base,
-        'choices': f'{base}.answers | select(. != null) | .choices | select(. != null) | .[]',
-        'rows': f'{base}.answers | select(. != null) | .rows | select(. != null) | .[]',
-        'cols': f'{base}.answers | select(. != null) | .cols | select(. != null) | .[].choices[]',
+    jqmap = functools.partial(map_from_json, details)
+    root = '.pages[].questions[]'
+    node = {
+    	'page': '.pages[]',
+        'question': '.pages[].questions[]',
+        'choice': '.pages[].questions[].answers | select(. != null) | .choices | select(. != null) | .[]',
+        'row': '.pages[].questions[].answers | select(. != null) | .rows | select(. != null) | .[]',
+        'col': '.pages[].questions[].answers | select(. != null) | .cols | select(. != null) | .[].choices[]',
     }
 
     df = (
         df
-        # look up _ids
-        .withColumn('family', map_(jqpath['questions'], '.id', '.family')[F.col('question_id')])
-        .withColumn('heading', map_(
-            jqpath['questions'], '.id', '.headings[0].heading')[F.col('question_id')])
+        .withColumn('page_idx', F.lpad(jqmap(node['page'], '.id', '.position')[F.col('page_id')], 5, '0'))
+        .withColumn('question_idx', F.lpad(jqmap(node['question'], '.id', '.position')[F.col('question_id')], 5, '0'))
+        .withColumn('family', jqmap(node['question'], '.id', '.family')[F.col('question_id')])
+
+        .withColumn('heading', jqmap(node['question'], '.id', '.headings[0].heading')[F.col('question_id')])
         .withColumn('heading', F.regexp_replace('heading', r'<[^>]*>', ''))  # strip HTML tags
-        .withColumn('row', map_(jqpath['rows'], '.id', '.text')[F.col('row_id')])
+        .withColumn('heading', norm('heading'))
+
+        .withColumn('row', jqmap(node['row'], '.id', '.text')[F.col('row_id')])
+        .withColumn('row', norm('row'))
+
         .withColumn('choice', F.coalesce(
-            map_(jqpath['choices'], '.id', '.text')[F.col('choice_id')],
-            map_(jqpath['cols'], '.id', '.text')[F.col('choice_id')]))
-
-        # flag for other
-        .withColumn('other', map_(
-            jqpath['questions'], '.id', '.answers.other.is_answer_choice')[F.col('question_id')])
-
+            jqmap(node['choice'], '.id', '.text')[F.col('choice_id')],
+            jqmap(node['col'], '.id', '.text')[F.col('choice_id')])
+        )
         # construct column names for later pivoting
         .withColumn(
             'column',
-            # demographic
-            F.when(F.col('family') == 'demographic', F.concat_ws('_', norm('heading'), norm('row')))
-
-             # single_choice
-             .when((F.col('family') == 'single_choice')
-                   & F.col('other') & F.col('other_id').isNotNull(),
-                   F.concat_ws('_', norm('heading'), F.lit('other')))
-             .when(F.col('family') == 'single_choice', norm('heading'))
-
-             # open_ended
-             .when(F.col('family') == 'open_ended', F.concat_ws('_', norm('heading'), norm('row')))
-
-             # multiple_choice
-             .when((F.col('family') == 'multiple_choice')
-                   & F.col('other') & F.col('other_id').isNotNull(),
-                   F.concat_ws('_', norm('heading'), F.lit('other')))
-             .when(F.col('family') == 'multiple_choice',
-                   F.concat_ws('_', norm('heading'), norm('choice')))
-
-             # matrix
-             .when(F.col('family') == 'matrix', F.concat_ws('_', norm('heading'), norm('row')))
-
-             # catch-all
-             .otherwise(F.concat_ws('_', F.lit('unparsed_question'), F.col('question_id')))
+            F.when(F.col('other_id').isNotNull(), F.concat_ws('_', 'heading', F.lit('other')))
+             .when(F.col('family') == 'demographic', F.concat_ws('_', 'heading', 'row'))
+             .when(F.col('family') == 'single_choice', F.col('heading'))
+             .when(F.col('family') == 'open_ended', F.concat_ws('_', 'heading', 'row'))
+             .when(F.col('family') == 'multiple_choice', F.concat_ws('_', 'heading', norm('choice')))
+             .when(F.col('family') == 'matrix', F.concat_ws('_', 'heading', 'row'))
+             .otherwise(F.concat_ws('_', F.lit('unparsed_question'), 'question_id'))
         )
         # pick field that constitutes "response"
         .withColumn(
             'value',
             F.when((F.col('family') == 'demographic'), F.col('text'))
-             .when((F.col('family') == 'single_choice') & F.col('other_id').isNotNull(),
-                   F.col('text'))
+             .when((F.col('family') == 'single_choice') & F.col('other_id').isNotNull(), F.col('text'))
              .when((F.col('family') == 'single_choice'), F.col('choice'))
              .when((F.col('family') == 'open_ended'), F.col('text'))
-             .when((F.col('family') == 'multiple_choice') & F.col('other_id').isNotNull(),
-                   F.col('text'))
+             .when((F.col('family') == 'multiple_choice') & F.col('other_id').isNotNull(), F.col('text'))
              .when((F.col('family') == 'multiple_choice'), F.col('choice'))
+             .when((F.col('family') == 'matrix') & F.col('other_id').isNotNull(), F.col('text'))
              .when((F.col('family') == 'matrix'), F.col('choice'))
         )
     )
     return df
 
 
-def _pivot(df):
+def pivot(df):
     """convert to wide format"""
 
-    # dedup questions with same column name
-    df = (
-        df
-        .withColumn('_rank', F.dense_rank().over(
-            Window.partitionBy('column').orderBy('question_id')))
-        .withColumn('column', F.concat_ws('_', 'column', '_rank'))
-    )
-    
     # pivot to wide format
     df = (
         df
-        # include _id in col names to allow for column ordering
-        .withColumn('column', F.concat_ws('_', F.lit('_'), 'question_id', 'row_id', 'column'))
+        # dedup questions with same column name
+        .withColumn('rank', F.dense_rank().over(Window.partitionBy('column').orderBy('question_id')))
+        # deterministic ordering for questions
+        .withColumn('order_by', F.concat_ws('_', 'page_idx', 'question_idx'))
+        # order within a question
+        .withColumn(
+        	'order_by',
+        	F.when(F.col('family') != 'single_choice',
+        		F.concat_ws('_', 'order_by', F.coalesce('choice_id', 'row_id', 'other_id'))
+        	).otherwise(F.col('order_by'))
+        )
+        # construct sortable column names
+        .withColumn('column', F.concat_ws('_', F.lit('_'), 'order_by', 'column', 'rank'))
         .groupBy(RESPONSE_KEY)
         .pivot('column')
         .agg(F.first('value'))
@@ -232,13 +220,12 @@ def _pivot(df):
     columns = RESPONSE_KEY + sorted(question_cols)
     df = df.select(*columns)
 
-    # figure out single choice questions with "Other" option
+    # find single choice questions with "Other" option
     questions_w_other = []
     base = columns[0]
     for col in columns:
-        # don't consider enumerator
-        b = re.sub(r'_\d+$', '', base)
-        # if column looks like `this_is_the_stem_other`
+        b = re.sub(r'_\d+$', '', base)  # don't consider enumerator
+        # if column looks like `this_is_the_base_other`
         if b in col and 'other' in col:
             questions_w_other.append((base, col))
         base = col
@@ -254,14 +241,15 @@ def _pivot(df):
         )
 
     # drop __question_id prefixes and _1 suffixes
-    renamed = map(lambda s: re.sub(r'^__[\d+_]+', '', s), df.columns)
-    renamed = map(lambda s: re.sub(r'_1$', '', s), renamed)
-    df = df.toDF(*renamed)
+    names = df.columns
+    names = map(lambda s: re.sub(r'^__[\d+_]+', '', s), names)
+    names = map(lambda s: re.sub(r'_1$', '', s), names)
+    df = df.toDF(*names)
     return df
 
 
-def transform_surveymonkey(spark_session, path_to_json_files, details):
-    df = _flatten(spark_session, path_to_json_files)
-    df = _interpret(df, details)
-    df = _pivot(df)
+def transform_survey(spark_session, path_to_json_files, details):
+    df = flatten(spark_session, path_to_json_files)
+    df = interpret(df, details)
+    df = pivot(df)
     return df
