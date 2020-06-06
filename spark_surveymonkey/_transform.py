@@ -21,11 +21,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 import re
+import json
 import itertools
 import functools
+from typing import Union, Dict
 
 import jq
-from pyspark.sql import functions as F
+from pyspark.sql import SparkSession, DataFrame, functions as F
 from pyspark.sql.window import Window
 
 
@@ -78,12 +80,12 @@ RESPONSE_KEY = [
 ]
 
 
-def flatten(spark_session, path_to_json_files):
+def flatten(spark_session, survey_responses):
     """take a collection of JSON files and convert to DataFrame
     supports JSON format from SurveyMonkey API endpoint
     v3/surveys/{survey_id}/responses
     """
-    df = spark_session.read.json(str(path_to_json_files))
+    df = spark_session.read.json(str(survey_responses))
     df = (
         df
         # expand responses
@@ -132,12 +134,16 @@ def flatten(spark_session, path_to_json_files):
     )
 
 
-def interpret(df, details):
+def interpret(df, survey_details):
     """take basic flattened DataFrame and translate _ids to human readable format
     assumes details_json is output from SurveyMonkey API endpoint
     v3/surveys/{survey_id}/details
     """
-    jqmap = functools.partial(map_from_json, details)
+    if isinstance(survey_details, str):
+        with open(survey_details) as f:
+            survey_details = json.load(f)
+
+    jqmap = functools.partial(map_from_json, survey_details)
     root = '.pages[].questions[]'
     node = {
     	'page': '.pages[]',
@@ -248,8 +254,22 @@ def pivot(df):
     return df
 
 
-def transform_survey(spark_session, path_to_json_files, details):
-    df = flatten(spark_session, path_to_json_files)
-    df = interpret(df, details)
+def transform_survey(spark_session: SparkSession,
+                     survey_responses: str,
+                     survey_details: Union[str, Dict[str, str]]) -> DataFrame:
+    """Convert `survey_responses` JSON files to `DataFrame`.
+
+    Args:
+        spark_session: A `SparkSession` object.
+        survey_responses: Path to directory containing JSON files.
+            Files retrieved from API endpoint `surveys/{survey_id}/responses/bulk`.
+        survey_details: Path to JSON file, or `dict` of JSON file.
+            File retrieved from API endpoint `surveys/{survey_id}/details`.
+
+    Returns:
+        `DataFrame`: Survey responses with 1 row per response.
+    """
+    df = flatten(spark_session, survey_responses)
+    df = interpret(df, survey_details)
     df = pivot(df)
     return df
