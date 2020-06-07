@@ -5,7 +5,7 @@ Convert SurveyMonkey respones in JSON to a PySpark DataFrame
 ```python
 from spark_surveymonkey import transform_survey
 
-df = transform_survey(spark_session, 'path/to/files/', 'path/to/details.json')
+df = transform_survey(spark_session, 'path/to/responses/', 'path/to/details.json')
 ```
 
 Function signature:
