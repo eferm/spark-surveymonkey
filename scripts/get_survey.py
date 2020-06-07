@@ -29,8 +29,8 @@ if token is None:
     dotenv.load_dotenv()
     token = os.getenv("ACCESS_TOKEN")
     if token is None:
-        sys.exit("get_survey_details.py: error: can't find access token, "
-                 "either pass argument --token or add ACCESS_TOKEN to .env.")
+        sys.exit(f"{Path(__file__).name}: error: can't find access token, "
+                 "either pass argument --token or add ACCESS_TOKEN to .env")
 
 host = 'https://api.surveymonkey.com/v3/surveys'
 headers = {
