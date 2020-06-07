@@ -129,5 +129,5 @@ dmypy.json
 .pyre/
 
 # project
-credentials.json
 .DS_Store
+/data
