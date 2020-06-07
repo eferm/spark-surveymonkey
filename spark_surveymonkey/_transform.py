@@ -161,10 +161,11 @@ def interpret(df, survey_details):
 
         .withColumn('heading', jqmap(node['question'], '.id', '.headings[0].heading')[F.col('question_id')])
         .withColumn('heading', F.regexp_replace('heading', r'<[^>]*>', ''))  # strip HTML tags
-        .withColumn('heading', norm('heading'))
+        .withColumn('heading_norm', norm('heading'))
 
         .withColumn('row', jqmap(node['row'], '.id', '.text')[F.col('row_id')])
-        .withColumn('row', norm('row'))
+        .withColumn('row', F.regexp_replace('row', r'<[^>]*>', ''))  # strip HTML tags
+        .withColumn('row_norm', norm('row'))
 
         .withColumn('choice', F.coalesce(
             jqmap(node['choice'], '.id', '.text')[F.col('choice_id')],
@@ -173,25 +174,25 @@ def interpret(df, survey_details):
         # construct column names for later pivoting
         .withColumn(
             'column',
-            F.when(F.col('other_id').isNotNull(), F.concat_ws('_', 'heading', F.lit('other')))
-             .when(F.col('family') == 'demographic', F.concat_ws('_', 'heading', 'row'))
-             .when(F.col('family') == 'single_choice', F.col('heading'))
-             .when(F.col('family') == 'open_ended', F.concat_ws('_', 'heading', 'row'))
-             .when(F.col('family') == 'multiple_choice', F.concat_ws('_', 'heading', norm('choice')))
-             .when(F.col('family') == 'matrix', F.concat_ws('_', 'heading', 'row'))
+            F.when(F.col('other_id').isNotNull(), F.concat_ws('_', 'heading_norm', F.lit('other')))
+             .when(F.col('family') == 'demographic', F.concat_ws('_', 'heading_norm', 'row_norm'))
+             .when(F.col('family') == 'single_choice', F.col('heading_norm'))
+             .when(F.col('family') == 'open_ended', F.concat_ws('_', 'heading_norm', 'row_norm'))
+             .when(F.col('family') == 'multiple_choice', F.concat_ws('_', 'heading_norm', norm('choice')))
+             .when(F.col('family') == 'matrix', F.concat_ws('_', 'heading_norm', 'row_norm'))
+             .when(F.col('family') == 'datetime', F.concat_ws('_', 'heading_norm', 'row_norm'))
              .otherwise(F.concat_ws('_', F.lit('unparsed_question'), 'question_id'))
         )
         # pick field that constitutes "response"
         .withColumn(
             'value',
-            F.when((F.col('family') == 'demographic'), F.col('text'))
-             .when((F.col('family') == 'single_choice') & F.col('other_id').isNotNull(), F.col('text'))
-             .when((F.col('family') == 'single_choice'), F.col('choice'))
-             .when((F.col('family') == 'open_ended'), F.col('text'))
-             .when((F.col('family') == 'multiple_choice') & F.col('other_id').isNotNull(), F.col('text'))
-             .when((F.col('family') == 'multiple_choice'), F.col('choice'))
-             .when((F.col('family') == 'matrix') & F.col('other_id').isNotNull(), F.col('text'))
-             .when((F.col('family') == 'matrix'), F.col('choice'))
+            F.when(F.col('other_id').isNotNull(), F.col('text'))
+             .when(F.col('family') == 'demographic', F.col('text'))
+             .when(F.col('family') == 'single_choice', F.col('choice'))
+             .when(F.col('family') == 'open_ended', F.col('text'))
+             .when(F.col('family') == 'multiple_choice', F.col('choice'))
+             .when(F.col('family') == 'matrix', F.col('choice'))
+             .when(F.col('family') == 'datetime', F.col('text'))
         )
     )
     return df
@@ -257,7 +258,7 @@ def pivot(df):
 def transform_survey(spark_session: SparkSession,
                      survey_responses: str,
                      survey_details: Union[str, Dict[str, str]]) -> DataFrame:
-    """Convert `survey_responses` JSON files to `DataFrame`.
+    """Convert SurveyMonkey responses in JSON to PySpark `DataFrame`.
 
     Args:
         spark_session: A `SparkSession` object.
