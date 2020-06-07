@@ -201,8 +201,6 @@ def interpret(df, survey_details):
 
 def pivot(df):
     """convert to wide format"""
-
-    # pivot to wide format
     df = (
         df
         # dedup questions with same column name
