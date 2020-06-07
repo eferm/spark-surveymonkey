@@ -164,6 +164,7 @@ def interpret(df, survey_details):
         .withColumn('heading_norm', norm('heading'))
 
         .withColumn('row', jqmap(node['row'], '.id', '.text')[F.col('row_id')])
+        .withColumn('row', F.regexp_extract('row', r'^\s*(.*)\s*$', 1))
         .withColumn('row', F.regexp_replace('row', r'<[^>]*>', ''))  # strip HTML tags
         .withColumn('row_norm', norm('row'))
 
