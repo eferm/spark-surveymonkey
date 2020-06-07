@@ -63,10 +63,10 @@ if args.output:
     out = Path(args.output)
     if len(results) > 1:
         out.mkdir(parents=True, exist_ok=True)
-        for i, response in enumerate(results):
+        for i, result in enumerate(results):
             fname = f'responses-{i:05}.json'
             with open(Path(out, fname), 'w') as f:
-                json.dump(response, f)
+                json.dump(result, f)
     else:
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, 'w') as f:
