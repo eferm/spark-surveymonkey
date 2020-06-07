@@ -49,10 +49,10 @@ def norm(col, maxlen=50):
     return col
 
 
-def map_from_json(details_json, base_string, key_string, val_string):
+def map_from_json(details, node, key, val):
     """construct pyspark map from jq strings"""
-    keys = jq.compile(base_string + key_string).input(details_json).all()
-    vals = jq.compile(base_string + val_string).input(details_json).all()
+    keys = jq.compile(node + key).input(details).all()
+    vals = jq.compile(node + val).input(details).all()
     flattened = itertools.chain.from_iterable(zip(keys, vals))
     return F.create_map(*map(F.lit, flattened))
 
@@ -146,7 +146,7 @@ def interpret(df, survey_details):
     jqmap = functools.partial(map_from_json, survey_details)
     root = '.pages[].questions[]'
     node = {
-    	'page': '.pages[]',
+        'page': '.pages[]',
         'question': '.pages[].questions[]',
         'choice': '.pages[].questions[].answers | select(. != null) | .choices | select(. != null) | .[]',
         'row': '.pages[].questions[].answers | select(. != null) | .rows | select(. != null) | .[]',
@@ -209,10 +209,10 @@ def pivot(df):
         .withColumn('order_by', F.concat_ws('_', 'page_idx', 'question_idx'))
         # order within a question
         .withColumn(
-        	'order_by',
-        	F.when(F.col('family') != 'single_choice',
-        		F.concat_ws('_', 'order_by', F.coalesce('choice_id', 'row_id', 'other_id'))
-        	).otherwise(F.col('order_by'))
+            'order_by',
+            F.when(F.col('family') != 'single_choice',
+                   F.concat_ws('_', 'order_by', F.coalesce('choice_id', 'row_id', 'other_id'))
+            ).otherwise(F.col('order_by'))
         )
         # construct sortable column names
         .withColumn('column', F.concat_ws('_', F.lit('_'), 'order_by', 'column', 'rank'))
