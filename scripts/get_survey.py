@@ -16,7 +16,8 @@ parser.add_argument('survey_id', help='the survey id', type=int)
 parser.add_argument('-e', '--endpoint', help='API endpoint to hit',
                     metavar='STRING', choices=['details', 'responses'],
                     default='details')
-parser.add_argument('-t', '--token', help='the access token', metavar='STRING')
+parser.add_argument('-t', '--token', help='the access token',
+                    metavar='STRING')
 parser.add_argument('-o', '--output', help='write response to location',
                     metavar='FILE')
 
@@ -28,8 +29,8 @@ if token is None:
     dotenv.load_dotenv()
     token = os.getenv("ACCESS_TOKEN")
     if token is None:
-        sys.exit("get_survey_details.py: error: unable to locate access token, "
-                 "either add ACCESS_TOKEN to .env or pass argument --token")
+        sys.exit("get_survey_details.py: error: can't find access token, "
+                 "either pass argument --token or add ACCESS_TOKEN to .env.")
 
 host = 'https://api.surveymonkey.com/v3/surveys'
 headers = {
@@ -44,7 +45,8 @@ if args.endpoint == 'details':
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     results.append(response.json())
-elif args.endpoint == 'responses':
+
+if args.endpoint == 'responses':
     url = f'{host}/{args.survey_id}/responses/bulk/?per_page=10'
     response = requests.get(url, headers=headers)
     response.raise_for_status()
@@ -52,11 +54,10 @@ elif args.endpoint == 'responses':
     results.append(response)
     r = 1
     while 'next' in response['links'] and r < MAX_REQUESTS:
-        response = requests.get(response['links']['next'], headers=headers).json()
+        url = response['links']['next']
+        response = requests.get(url, headers=headers).json()
         results.append(response)
         r += 1
-else:
-    raise ValueError(f'endpoint not supported: {args.endpoint}')
 
 if args.output:
     out = Path(args.output)
