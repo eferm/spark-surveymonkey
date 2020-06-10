@@ -7,9 +7,10 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.6.1"
-jq = "^1.0.1"
+jsonpath-ng = "^1.5.1"
 
 [tool.poetry.dev-dependencies]
+jq = "^1.0.1"
 py4j = "^0.10.9"
 jupyter = "^1.0.0"
 requests = "^2.23.0"

@@ -26,7 +26,7 @@ import itertools
 import functools
 from typing import Union, Dict
 
-import jq
+import jsonpath_ng
 from pyspark.sql import SparkSession, DataFrame, functions as F
 from pyspark.sql.window import Window
 
@@ -50,9 +50,9 @@ def norm(col, maxlen=50):
 
 
 def map_from_json(details, node, key, val):
-    """construct pyspark map from jq strings"""
-    keys = jq.compile(node + key).input(details).all()
-    vals = jq.compile(node + val).input(details).all()
+    """construct pyspark map from jsonpaths"""
+    keys = [x.value for x in jsonpath_ng.parse(node + key).find(details)]
+    vals = [x.value for x in jsonpath_ng.parse(node + val).find(details)]
     flattened = itertools.chain.from_iterable(zip(keys, vals))
     return F.create_map(*map(F.lit, flattened))
 
@@ -138,39 +138,39 @@ def interpret(df, survey_details):
     """take basic flattened DataFrame and translate _ids to human readable format
     assumes details_json is output from SurveyMonkey API endpoint
     v3/surveys/{survey_id}/details
+    API docs: https://developer.surveymonkey.com/api/v3/?shell#formatting-question-types
     """
     if isinstance(survey_details, str):
         with open(survey_details) as f:
             survey_details = json.load(f)
 
-    jqmap = functools.partial(map_from_json, survey_details)
-    root = '.pages[].questions[]'
-    node = {
-        'page': '.pages[]',
-        'question': '.pages[].questions[]',
-        'choice': '.pages[].questions[].answers | select(. != null) | .choices | select(. != null) | .[]',
-        'row': '.pages[].questions[].answers | select(. != null) | .rows | select(. != null) | .[]',
-        'col': '.pages[].questions[].answers | select(. != null) | .cols | select(. != null) | .[].choices[]',
+    map_ = functools.partial(map_from_json, survey_details)
+    nodes = {
+        'page': '$.pages[*]',
+        'question': '$.pages[*].questions[*]',
+        'choice': '$.pages[*].questions[*].answers[*].choices[*]',
+        'row': '$.pages[*].questions[*].answers[*].rows[*]',
+        'col': '$.pages[*].questions[*].answers[*].cols[*].choices[*]',
     }
 
     df = (
         df
-        .withColumn('page_idx', F.lpad(jqmap(node['page'], '.id', '.position')[F.col('page_id')], 5, '0'))
-        .withColumn('question_idx', F.lpad(jqmap(node['question'], '.id', '.position')[F.col('question_id')], 5, '0'))
-        .withColumn('family', jqmap(node['question'], '.id', '.family')[F.col('question_id')])
+        .withColumn('page_idx', F.lpad(map_(nodes['page'], '.id', '.position')[F.col('page_id')], 5, '0'))
+        .withColumn('question_idx', F.lpad(map_(nodes['question'], '.id', '.position')[F.col('question_id')], 5, '0'))
+        .withColumn('family', map_(nodes['question'], '.id', '.family')[F.col('question_id')])
 
-        .withColumn('heading', jqmap(node['question'], '.id', '.headings[0].heading')[F.col('question_id')])
+        .withColumn('heading', map_(nodes['question'], '.id', '.headings[0].heading')[F.col('question_id')])
         .withColumn('heading', F.regexp_replace('heading', r'<[^>]*>', ''))  # strip HTML tags
         .withColumn('heading_norm', norm('heading'))
 
-        .withColumn('row', jqmap(node['row'], '.id', '.text')[F.col('row_id')])
+        .withColumn('row', map_(nodes['row'], '.id', '.text')[F.col('row_id')])
         .withColumn('row', F.regexp_extract('row', r'^\s*(.*)\s*$', 1))
         .withColumn('row', F.regexp_replace('row', r'<[^>]*>', ''))  # strip HTML tags
         .withColumn('row_norm', norm('row'))
 
         .withColumn('choice', F.coalesce(
-            jqmap(node['choice'], '.id', '.text')[F.col('choice_id')],
-            jqmap(node['col'], '.id', '.text')[F.col('choice_id')])
+            map_(nodes['choice'], '.id', '.text')[F.col('choice_id')],
+            map_(nodes['col'], '.id', '.text')[F.col('choice_id')])
         )
         # construct column names for later pivoting
         .withColumn(
@@ -203,18 +203,17 @@ def pivot(df):
     """convert to wide format"""
     df = (
         df
-        # dedup questions with same column name
-        .withColumn('rank', F.dense_rank().over(Window.partitionBy('column').orderBy('question_id')))
         # deterministic ordering for questions
         .withColumn('order_by', F.concat_ws('_', 'page_idx', 'question_idx'))
-        # order within a question
         .withColumn(
             'order_by',
             F.when(F.col('family') != 'single_choice',
                    F.concat_ws('_', 'order_by', F.coalesce('choice_id', 'row_id', 'other_id'))
             ).otherwise(F.col('order_by'))
         )
-        # construct sortable column names
+        # enumerator for questions with same column name
+        .withColumn('rank', F.dense_rank().over(Window.partitionBy('column').orderBy('question_id')))
+        # construct orderable column names
         .withColumn('column', F.concat_ws('_', F.lit('_'), 'order_by', 'column', 'rank'))
         .groupBy(RESPONSE_KEY)
         .pivot('column')
@@ -226,7 +225,7 @@ def pivot(df):
     columns = RESPONSE_KEY + sorted(question_cols)
     df = df.select(*columns)
 
-    # find single choice questions with "Other" option
+    # find single_choice questions with "Other" option
     questions_w_other = []
     base = columns[0]
     for col in columns:
