@@ -115,7 +115,7 @@ def flatten(spark_session, survey_responses):
     # columns that sometimes don't exist
     for c in ['choice_id', 'row_id', 'col_id', 'other_id']:
         if c not in df.columns:
-            df = df.withColumn(c, F.lit(None).cast('long'))
+            df = df.withColumn(c, F.lit(None).cast('string'))
 
     for c in RESPONSE_KEY:
         if c not in df.columns:
@@ -207,8 +207,9 @@ def pivot(df):
         .withColumn('order_by', F.concat_ws('_', 'page_idx', 'question_idx'))
         .withColumn(
             'order_by',
-            F.when(F.col('family') != 'single_choice',
-                   F.concat_ws('_', 'order_by', F.coalesce('choice_id', 'row_id', 'other_id'))
+            F.when(
+                F.col('family') != 'single_choice',
+                F.concat_ws('_', 'order_by', F.coalesce('choice_id', 'row_id', 'other_id'))
             ).otherwise(F.col('order_by'))
         )
         # enumerator for questions with same column name
