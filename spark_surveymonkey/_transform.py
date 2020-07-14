@@ -1,6 +1,6 @@
 """MIT License
 
-Copyright (c) 2020 Emanuel Ferm
+Copyright (c) 2020 Historized, LLC
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -54,7 +54,7 @@ def map_from_json(details, node, key, val):
     keys = [x.value for x in jsonpath_ng.parse(node + key).find(details)]
     vals = [x.value for x in jsonpath_ng.parse(node + val).find(details)]
     flattened = itertools.chain.from_iterable(zip(keys, vals))
-    return F.create_map(*map(F.lit, flattened))
+    return F.create_map(*map(F.lit, flattened)).cast('map<string,string>')
 
 
 RESPONSE_KEY = [
@@ -170,8 +170,8 @@ def interpret(df, survey_details):
 
         .withColumn('choice', F.coalesce(
             map_(nodes['choice'], '.id', '.text')[F.col('choice_id')],
-            map_(nodes['col'], '.id', '.text')[F.col('choice_id')])
-        )
+            map_(nodes['col'], '.id', '.text')[F.col('choice_id')]
+        ))
         # construct column names for later pivoting
         .withColumn(
             'column',
